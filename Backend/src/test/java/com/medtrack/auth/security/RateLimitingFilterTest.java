@@ -74,6 +74,18 @@ class RateLimitingFilterTest {
         ReflectionTestUtils.setField(filter, "aiAdminCapacity", 10);
         ReflectionTestUtils.setField(filter, "aiAdminRefillDurationStr", "1m");
 
+        ReflectionTestUtils.setField(filter, "equipmentCreateCapacity", 3);
+        ReflectionTestUtils.setField(filter, "equipmentCreateRefillTokens", 3);
+        ReflectionTestUtils.setField(filter, "equipmentCreateRefillDurationStr", "1m");
+
+        ReflectionTestUtils.setField(filter, "equipmentDeleteCapacity", 2);
+        ReflectionTestUtils.setField(filter, "equipmentDeleteRefillTokens", 2);
+        ReflectionTestUtils.setField(filter, "equipmentDeleteRefillDurationStr", "1m");
+
+        ReflectionTestUtils.setField(filter, "equipmentImportCapacity", 1);
+        ReflectionTestUtils.setField(filter, "equipmentImportRefillTokens", 1);
+        ReflectionTestUtils.setField(filter, "equipmentImportRefillDurationStr", "1m");
+
         ReflectionTestUtils.setField(filter, "trustedProxiesRaw", trustedProxies);
         ReflectionTestUtils.setField(filter, "maxTrackedClients", 1000);
         ReflectionTestUtils.setField(filter, "clientTtlStr", "10m");
@@ -130,10 +142,10 @@ class RateLimitingFilterTest {
         @Test
         @DisplayName("write endpoints use the write bucket")
         void writeGroupIsSeparate() throws Exception {
-            assertEquals(200, call("POST", "/api/equipment", "1.1.1.1", null));
-            assertEquals(200, call("PUT", "/api/equipment/1", "1.1.1.1", null));
+            assertEquals(200, call("POST", "/api/orders", "1.1.1.1", null));
+            assertEquals(200, call("PUT", "/api/orders/1", "1.1.1.1", null));
             assertEquals(HttpStatus.TOO_MANY_REQUESTS.value(),
-                    call("DELETE", "/api/equipment/1", "1.1.1.1", null));
+                    call("DELETE", "/api/orders/1", "1.1.1.1", null));
         }
 
         @Test
@@ -170,6 +182,115 @@ class RateLimitingFilterTest {
             assertTrue(response.getContentAsString().contains("Too Many Requests"),
                     response.getContentAsString());
             assertTrue(response.getHeader("Retry-After") != null, "Retry-After header should be present");
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Sensitive equipment operations rate limiting
+    // -----------------------------------------------------------------
+
+    @Nested
+    @DisplayName("sensitive equipment operations")
+    class SensitiveEquipmentOperations {
+
+        @Test
+        @DisplayName("equipment creation endpoint uses dedicated rate limit")
+        void equipmentCreationUsesDedicatedLimit() throws Exception {
+            assertEquals(200, call("POST", "/api/equipment", "1.1.1.1", null));
+            assertEquals(200, call("POST", "/api/equipment", "1.1.1.1", null));
+            assertEquals(200, call("POST", "/api/equipment", "1.1.1.1", null));
+            assertEquals(HttpStatus.TOO_MANY_REQUESTS.value(),
+                    call("POST", "/api/equipment", "1.1.1.1", null),
+                    "the fourth request exceeds equipment creation capacity of 3");
+        }
+
+        @Test
+        @DisplayName("equipment deletion endpoint uses dedicated rate limit")
+        void equipmentDeletionUsesDedicatedLimit() throws Exception {
+            assertEquals(200, call("DELETE", "/api/equipment/1", "1.1.1.1", null));
+            assertEquals(200, call("DELETE", "/api/equipment/2", "1.1.1.1", null));
+            assertEquals(HttpStatus.TOO_MANY_REQUESTS.value(),
+                    call("DELETE", "/api/equipment/3", "1.1.1.1", null),
+                    "the third request exceeds equipment deletion capacity of 2");
+        }
+
+        @Test
+        @DisplayName("bulk equipment import endpoint uses dedicated rate limit")
+        void equipmentImportUsesDedicatedLimit() throws Exception {
+            assertEquals(200, call("POST", "/api/equipment/import", "1.1.1.1", null));
+            assertEquals(HttpStatus.TOO_MANY_REQUESTS.value(),
+                    call("POST", "/api/equipment/import", "1.1.1.1", null),
+                    "the second request exceeds equipment import capacity of 1");
+        }
+
+        @Test
+        @DisplayName("equipment creation limit is independent from write operations")
+        void equipmentCreationIndependentFromWrite() throws Exception {
+            // Exhaust equipment creation limit
+            call("POST", "/api/equipment", "1.1.1.1", null);
+            call("POST", "/api/equipment", "1.1.1.1", null);
+            call("POST", "/api/equipment", "1.1.1.1", null);
+            assertEquals(HttpStatus.TOO_MANY_REQUESTS.value(),
+                    call("POST", "/api/equipment", "1.1.1.1", null));
+
+            // Other write operations should still work with their own limit
+            assertEquals(200, call("POST", "/api/orders", "1.1.1.1", null));
+        }
+
+        @Test
+        @DisplayName("equipment creation rate limit returns specific error message")
+        void equipmentCreationReturnsSpecificErrorMessage() throws Exception {
+            call("POST", "/api/equipment", "1.1.1.1", null);
+            call("POST", "/api/equipment", "1.1.1.1", null);
+            call("POST", "/api/equipment", "1.1.1.1", null);
+
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            filter.doFilter(request("POST", "/api/equipment", "1.1.1.1", null), response, filterChain);
+
+            assertEquals(HttpStatus.TOO_MANY_REQUESTS.value(), response.getStatus());
+            assertTrue(response.getContentAsString().contains("Equipment creation rate limit exceeded"),
+                    "Response should contain specific equipment creation rate limit message");
+        }
+
+        @Test
+        @DisplayName("equipment deletion rate limit returns specific error message")
+        void equipmentDeletionReturnsSpecificErrorMessage() throws Exception {
+            call("DELETE", "/api/equipment/1", "1.1.1.1", null);
+            call("DELETE", "/api/equipment/2", "1.1.1.1", null);
+
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            filter.doFilter(request("DELETE", "/api/equipment/3", "1.1.1.1", null), response, filterChain);
+
+            assertEquals(HttpStatus.TOO_MANY_REQUESTS.value(), response.getStatus());
+            assertTrue(response.getContentAsString().contains("Equipment deletion rate limit exceeded"),
+                    "Response should contain specific equipment deletion rate limit message");
+        }
+
+        @Test
+        @DisplayName("equipment import rate limit returns specific error message")
+        void equipmentImportReturnsSpecificErrorMessage() throws Exception {
+            call("POST", "/api/equipment/import", "1.1.1.1", null);
+
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            filter.doFilter(request("POST", "/api/equipment/import", "1.1.1.1", null), response, filterChain);
+
+            assertEquals(HttpStatus.TOO_MANY_REQUESTS.value(), response.getStatus());
+            assertTrue(response.getContentAsString().contains("Bulk equipment import rate limit exceeded"),
+                    "Response should contain specific equipment import rate limit message");
+        }
+
+        @Test
+        @DisplayName("different clients have independent equipment creation limits")
+        void equipmentCreationIndependentPerClient() throws Exception {
+            // Exhaust equipment creation limit for client 1
+            call("POST", "/api/equipment", "1.1.1.1", null);
+            call("POST", "/api/equipment", "1.1.1.1", null);
+            call("POST", "/api/equipment", "1.1.1.1", null);
+            assertEquals(HttpStatus.TOO_MANY_REQUESTS.value(),
+                    call("POST", "/api/equipment", "1.1.1.1", null));
+
+            // Client 2 should have their own limit
+            assertEquals(200, call("POST", "/api/equipment", "2.2.2.2", null));
         }
     }
 
@@ -361,6 +482,9 @@ class RateLimitingFilterTest {
             ReflectionTestUtils.setField(customFilter, "getCapacity", -5);
             ReflectionTestUtils.setField(customFilter, "aiTechnicianCapacity", 0);
             ReflectionTestUtils.setField(customFilter, "aiAdminCapacity", 0);
+            ReflectionTestUtils.setField(customFilter, "equipmentCreateCapacity", 0);
+            ReflectionTestUtils.setField(customFilter, "equipmentDeleteCapacity", -3);
+            ReflectionTestUtils.setField(customFilter, "equipmentImportCapacity", 0);
             ReflectionTestUtils.setField(customFilter, "authRefillDurationStr", "invalid_duration");
             ReflectionTestUtils.setField(customFilter, "clientTtlStr", "");
 
@@ -380,6 +504,9 @@ class RateLimitingFilterTest {
             ReflectionTestUtils.setField(customFilter, "writeRefillDurationStr", "invalid");
             ReflectionTestUtils.setField(customFilter, "aiTechnicianRefillDurationStr", "bad_format");
             ReflectionTestUtils.setField(customFilter, "aiAdminRefillDurationStr", null);
+            ReflectionTestUtils.setField(customFilter, "equipmentCreateRefillDurationStr", null);
+            ReflectionTestUtils.setField(customFilter, "equipmentDeleteRefillDurationStr", "   ");
+            ReflectionTestUtils.setField(customFilter, "equipmentImportRefillDurationStr", "invalid");
 
             org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> customFilter.init());
             org.junit.jupiter.api.Assertions.assertNotNull(customFilter, "Filter should be instantiated successfully");

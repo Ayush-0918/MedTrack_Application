@@ -77,6 +77,42 @@ public class RateLimitingFilter extends OncePerRequestFilter {
     @Value("${security.rate-limit.ai.admin.refill-duration:1h}")
     private String aiAdminRefillDurationStr = "1h";
 
+    /** Rate limiting capacity for equipment creation endpoint. */
+    @Value("${security.rate-limit.equipment.create.capacity:10}")
+    private int equipmentCreateCapacity = 10;
+
+    /** Refill tokens for equipment creation rate limiting bucket. */
+    @Value("${security.rate-limit.equipment.create.refill-tokens:10}")
+    private int equipmentCreateRefillTokens = 10;
+
+    /** Refill duration string for equipment creation rate limiting bucket. */
+    @Value("${security.rate-limit.equipment.create.refill-duration:1m}")
+    private String equipmentCreateRefillDurationStr = "1m";
+
+    /** Rate limiting capacity for equipment deletion endpoint. */
+    @Value("${security.rate-limit.equipment.delete.capacity:5}")
+    private int equipmentDeleteCapacity = 5;
+
+    /** Refill tokens for equipment deletion rate limiting bucket. */
+    @Value("${security.rate-limit.equipment.delete.refill-tokens:5}")
+    private int equipmentDeleteRefillTokens = 5;
+
+    /** Refill duration string for equipment deletion rate limiting bucket. */
+    @Value("${security.rate-limit.equipment.delete.refill-duration:1m}")
+    private String equipmentDeleteRefillDurationStr = "1m";
+
+    /** Rate limiting capacity for bulk equipment import endpoint. */
+    @Value("${security.rate-limit.equipment.import.capacity:3}")
+    private int equipmentImportCapacity = 3;
+
+    /** Refill tokens for bulk equipment import rate limiting bucket. */
+    @Value("${security.rate-limit.equipment.import.refill-tokens:3}")
+    private int equipmentImportRefillTokens = 3;
+
+    /** Refill duration string for bulk equipment import rate limiting bucket. */
+    @Value("${security.rate-limit.equipment.import.refill-duration:1m}")
+    private String equipmentImportRefillDurationStr = "1m";
+
     /**
      * Peer addresses whose {@code X-Forwarded-For} header is trusted.
      *
@@ -117,6 +153,9 @@ public class RateLimitingFilter extends OncePerRequestFilter {
     private Bandwidth writeBandwidth;
     private Bandwidth aiTechnicianBandwidth;
     private Bandwidth aiAdminBandwidth;
+    private Bandwidth equipmentCreateBandwidth;
+    private Bandwidth equipmentDeleteBandwidth;
+    private Bandwidth equipmentImportBandwidth;
 
     @PostConstruct
     public void init() {
@@ -128,18 +167,30 @@ public class RateLimitingFilter extends OncePerRequestFilter {
         int safeWriteRefill = sanitizePositive(writeRefillTokens, 30);
         int safeAiTechCap = sanitizePositive(aiTechnicianCapacity, 10);
         int safeAiAdminCap = sanitizePositive(aiAdminCapacity, 50);
+        int safeEquipmentCreateCap = sanitizePositive(equipmentCreateCapacity, 10);
+        int safeEquipmentCreateRefill = sanitizePositive(equipmentCreateRefillTokens, 10);
+        int safeEquipmentDeleteCap = sanitizePositive(equipmentDeleteCapacity, 5);
+        int safeEquipmentDeleteRefill = sanitizePositive(equipmentDeleteRefillTokens, 5);
+        int safeEquipmentImportCap = sanitizePositive(equipmentImportCapacity, 3);
+        int safeEquipmentImportRefill = sanitizePositive(equipmentImportRefillTokens, 3);
 
         String safeAuthDurationStr = sanitizeDuration(authRefillDurationStr, "1m");
         String safeGetDurationStr = sanitizeDuration(getRefillDurationStr, "1m");
         String safeWriteDurationStr = sanitizeDuration(writeRefillDurationStr, "1m");
         String safeAiTechDurationStr = sanitizeDuration(aiTechnicianRefillDurationStr, "1h");
         String safeAiAdminDurationStr = sanitizeDuration(aiAdminRefillDurationStr, "1h");
+        String safeEquipmentCreateDurationStr = sanitizeDuration(equipmentCreateRefillDurationStr, "1m");
+        String safeEquipmentDeleteDurationStr = sanitizeDuration(equipmentDeleteRefillDurationStr, "1m");
+        String safeEquipmentImportDurationStr = sanitizeDuration(equipmentImportRefillDurationStr, "1m");
 
         this.authBandwidth = Bandwidth.classic(safeAuthCap, Refill.intervally(safeAuthRefill, parseDuration(safeAuthDurationStr)));
         this.getBandwidth = Bandwidth.classic(safeGetCap, Refill.intervally(safeGetRefill, parseDuration(safeGetDurationStr)));
         this.writeBandwidth = Bandwidth.classic(safeWriteCap, Refill.intervally(safeWriteRefill, parseDuration(safeWriteDurationStr)));
         this.aiTechnicianBandwidth = Bandwidth.classic(safeAiTechCap, Refill.intervally(safeAiTechCap, parseDuration(safeAiTechDurationStr)));
         this.aiAdminBandwidth = Bandwidth.classic(safeAiAdminCap, Refill.intervally(safeAiAdminCap, parseDuration(safeAiAdminDurationStr)));
+        this.equipmentCreateBandwidth = Bandwidth.classic(safeEquipmentCreateCap, Refill.intervally(safeEquipmentCreateRefill, parseDuration(safeEquipmentCreateDurationStr)));
+        this.equipmentDeleteBandwidth = Bandwidth.classic(safeEquipmentDeleteCap, Refill.intervally(safeEquipmentDeleteRefill, parseDuration(safeEquipmentDeleteDurationStr)));
+        this.equipmentImportBandwidth = Bandwidth.classic(safeEquipmentImportCap, Refill.intervally(safeEquipmentImportRefill, parseDuration(safeEquipmentImportDurationStr)));
         this.clientTtl = parseDuration(sanitizeDuration(clientTtlStr, "10m"));
         this.trustedProxies = parseTrustedProxies(trustedProxiesRaw);
     }
@@ -253,9 +304,18 @@ public class RateLimitingFilter extends OncePerRequestFilter {
                 }
                 response.setHeader("Retry-After", String.valueOf(waitForRefillSeconds));
                 
-                String message = path.startsWith("/api/ai-assistant") 
-                    ? "AI Assistant request rate limit exceeded. Please try again later." 
-                    : "API rate limit exceeded.";
+                String message;
+                if (path.startsWith("/api/ai-assistant")) {
+                    message = "AI Assistant request rate limit exceeded. Please try again later.";
+                } else if ("equipment_create".equals(group)) {
+                    message = "Equipment creation rate limit exceeded. Please try again later.";
+                } else if ("equipment_delete".equals(group)) {
+                    message = "Equipment deletion rate limit exceeded. Please try again later.";
+                } else if ("equipment_import".equals(group)) {
+                    message = "Bulk equipment import rate limit exceeded. Please try again later.";
+                } else {
+                    message = "API rate limit exceeded.";
+                }
                 
                 sendTooManyRequestsResponse(request, response, message);
                 return;
@@ -279,6 +339,16 @@ public class RateLimitingFilter extends OncePerRequestFilter {
         if ("GET".equalsIgnoreCase(method)) {
             return "get";
         }
+        // Sensitive equipment operations
+        if ("POST".equalsIgnoreCase(method) && "/api/equipment".equals(path)) {
+            return "equipment_create";
+        }
+        if ("DELETE".equalsIgnoreCase(method) && path.startsWith("/api/equipment/")) {
+            return "equipment_delete";
+        }
+        if ("POST".equalsIgnoreCase(method) && "/api/equipment/import".equals(path)) {
+            return "equipment_import";
+        }
         return "write";
     }
 
@@ -288,6 +358,9 @@ public class RateLimitingFilter extends OncePerRequestFilter {
             case "get":  return getBandwidth;
             case "ai_technician": return aiTechnicianBandwidth;
             case "ai_admin": return aiAdminBandwidth;
+            case "equipment_create": return equipmentCreateBandwidth;
+            case "equipment_delete": return equipmentDeleteBandwidth;
+            case "equipment_import": return equipmentImportBandwidth;
             default:     return writeBandwidth;
         }
     }
